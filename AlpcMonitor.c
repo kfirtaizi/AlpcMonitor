@@ -1,8 +1,8 @@
 #include <ntddk.h>
 #include <windef.h>
 #include <ntstrsafe.h>
+#include <Zydis/Zydis.h>
 
-#pragma warning(disable:4201)
 #pragma warning(disable:4152)
 
 #define DEVICE_NAME L"\\Device\\AlpcMonitor"
@@ -13,6 +13,10 @@
 #define IOCTL_ALPC_GET_MESSAGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define MAX_STACK_FRAMES 32
+
+#define MAX_JUMP_CODE_LENGTH 20
+#define JUMP_TO_HOOK_SHELL_LENGTH 12
+#define JUMP_TO_ORIGINAL_CODE_SHELL_LENGTH 14
 
 // Message buffer structure for usermode
 typedef struct _ALPC_MONITOR_MESSAGE {
@@ -179,6 +183,7 @@ PVOID g_NtAlpcSendWaitReceivePortAddress = NULL;
 BOOLEAN g_HookInstalled = FALSE;
 PMDL g_Mdl = NULL;
 PVOID g_MappedAddress = NULL;
+SIZE_T g_OriginalCodeLength = 0;
 
 typedef struct _SYSTEM_SERVICE_TABLE {
     PULONG ServiceTableBase;        // Pointer to KiServiceTable (array of offsets on x64)
@@ -353,9 +358,8 @@ ULONG CaptureCallStack(PVOID* StackFrames, ULONG MaxFrames) {
 
     RtlZeroMemory(StackFrames, MaxFrames * sizeof(PVOID));
     __try {
-        // Skip first 2 frames (this function and caller)
         FramesCaptured = RtlCaptureStackBackTrace(
-            3,              // FramesToSkip
+            0,              // FramesToSkip
             MaxFrames,      // FramesToCapture
             StackFrames,    // BackTrace buffer
             NULL            // BackTraceHash (optional)
@@ -398,7 +402,6 @@ VOID LogAlpcMessage(PPORT_MESSAGE Message, BOOLEAN IsSend) {
             RtlCopyMemory(MonitorMessage.Data, (PUCHAR)Message + sizeof(PORT_MESSAGE), CopySize);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            // Handle exception
         }
     }
 
@@ -496,11 +499,45 @@ NTSTATUS HookedNtAlpcSendWaitReceivePort(
     return status;
 }
 
-NTSTATUS InstallHook(VOID) {
-    UCHAR JmpCode[15] = { 0 };
+// The hook control flow is as follows:
+//
+// 1. AN APPLICATION CALLS NtAlpcSendWaitReceivePort:
+//    - The stack contains the return address pointing back to the application code.
+//
+// 2. THE HOOK PATCH REDIRECTS EXECUTION:
+//    - The patch at the start of NtAlpcSendWaitReceivePort immediately transfers control to our hook handler:
+//      HookedNtAlpcSendWaitReceivePor, using a jmp.
+//
+// 3. HookedNtAlpcSendWaitReceivePort:
+//    - Log.
+//    - Call the trampoline g_OriginalNtAlpcSendWaitReceivePort.
+//
+// 4. THE CALL TO THE TRAMPOLINE:
+//    - The 'CALL g_OriginalNtAlpcSendWaitReceivePort' instruction pushes a new
+//      return address onto the stack. This address points back into our
+//      HookedNtAlpcSendWaitReceivePort handler (to the code after the call).
+//
+// 5. THE TRAMPOLINE EXECUTES:
+//    - The trampoline:
+//      a. Executes the original function bytes that we overwrote.
+//      b. JMPs to the rest of the original NtAlpcSendWaitReceivePort
+//         function, right after the part we overwrote.
+//
+// 6. THE ORIGINAL FUNCTION FINISHES (RET #1):
+//    - The original NtAlpcSendWaitReceivePort function completes and hits its
+//      final 'RET' instruction.
+//    - This RET pops the return address placed on the stack in step 4, returning
+//      control back to our HookedNtAlpcSendWaitReceivePort handler.
+//
+// 7. BACK IN THE HOOK HANDLER::
+//    - Some more logging.
+//    - Executes its own 'RET' instruction. This second RET pops the
+//      original return address (from step 1) off the stack, and control returns
+//      cleanly to the application that initiated the call.
 
+NTSTATUS InstallHook(VOID) {
     // Find the SSN of NtAlpcSendWaitReceivePort during kernel debugging with: .foreach /ps 1 /pS 1 ( offset {dd /c 1 nt!KiServiceTable L poi(nt!KeServiceDescriptorTable+10)}){ r $t0 = ( offset >>> 4) + nt!KiServiceTable; .printf "%p - %y\n", $t0, $t0 }
-    g_NtAlpcSendWaitReceivePortAddress = GetSsdtRoutineAddress(140);
+    g_NtAlpcSendWaitReceivePortAddress = GetSsdtRoutineAddress(142);
     if (!g_NtAlpcSendWaitReceivePortAddress) {
         DbgPrint("[ALPC] Failed to get function address for %s\n", "NtAlpcSendWaitReceivePort");
         return STATUS_UNSUCCESSFUL;
@@ -508,16 +545,68 @@ NTSTATUS InstallHook(VOID) {
 
     DbgPrint("[ALPC] Installing hook at %p\n", g_NtAlpcSendWaitReceivePortAddress);
 
+    // Initialize Zydis decoder and formatter
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)))
+        return STATUS_DRIVER_INTERNAL_ERROR;
+
+    ZydisFormatter formatter;
+    if (!ZYAN_SUCCESS(ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL)))
+        return STATUS_DRIVER_INTERNAL_ERROR;
+
+    SIZE_T readOffset = 0;
+    ZydisDecodedInstruction instruction;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+    ZyanStatus status;
+    CHAR printBuffer[128];
+
+    // Start the decode loop
+    while (readOffset < JUMP_TO_HOOK_SHELL_LENGTH)
+    {
+        status = ZydisDecoderDecodeFull(&decoder,
+            (PVOID)((uintptr_t)g_NtAlpcSendWaitReceivePortAddress + readOffset), 20, &instruction,
+            operands);
+
+        if (status == ZYDIS_STATUS_NO_MORE_DATA)
+        {
+            return STATUS_DRIVER_INTERNAL_ERROR;
+        }
+
+        NT_ASSERT(ZYAN_SUCCESS(status));
+        if (!ZYAN_SUCCESS(status))
+        {
+            readOffset++;
+            continue;
+        }
+
+        // Format and print the instruction
+        const ZyanU64 instrAddress = (ZyanU64)(((uintptr_t)g_NtAlpcSendWaitReceivePortAddress + readOffset));
+        ZydisFormatterFormatInstruction(
+            &formatter, &instruction, operands, instruction.operand_count_visible, printBuffer,
+            sizeof(printBuffer), instrAddress, NULL);
+        DbgPrint("+%-4X 0x%-16llX\t\t%hs\n", (ULONG)readOffset, instrAddress, printBuffer);
+
+        readOffset += instruction.length;
+    }
+
+    g_OriginalCodeLength = readOffset;
+
+    DbgPrint("[ALPC] Determined hook length to be %zu bytes.\n", g_OriginalCodeLength);
+    
+    UCHAR JmpCode[MAX_JUMP_CODE_LENGTH] = { 0 }; 
+
     // Allocate trampoline
     g_OriginalNtAlpcSendWaitReceivePort = (PNtAlpcSendWaitReceivePort)
-        ExAllocatePool2(POOL_FLAG_NON_PAGED_EXECUTE, 32, 'cplA');
+        ExAllocatePool2(POOL_FLAG_NON_PAGED_EXECUTE, g_OriginalCodeLength
+            + JUMP_TO_ORIGINAL_CODE_SHELL_LENGTH, 'cplA');
     if (!g_OriginalNtAlpcSendWaitReceivePort) {
         DbgPrint("[ALPC] Failed to allocate trampoline memory for %s\n", "NtAlpcSendWaitReceivePort");
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
     // Create MDL
-    g_Mdl = IoAllocateMdl(g_NtAlpcSendWaitReceivePortAddress, 15, FALSE, FALSE, NULL);
+    g_Mdl = IoAllocateMdl(g_NtAlpcSendWaitReceivePortAddress, (ULONG)g_OriginalCodeLength,
+        FALSE, FALSE, NULL);
     if (!g_Mdl) {
         DbgPrint("[ALPC] Failed to allocate MDL in order to modify original %s\n", "NtAlpcSendWaitReceivePort");
         ExFreePoolWithTag(g_OriginalNtAlpcSendWaitReceivePort, 'cplA');
@@ -537,7 +626,7 @@ NTSTATUS InstallHook(VOID) {
 
     // Copy original bytes
     RtlCopyMemory(g_OriginalNtAlpcSendWaitReceivePort,
-        g_NtAlpcSendWaitReceivePortAddress, 15); // g_OriginalNtAlpcSendWaitReceivePort will be called from the hook function after logging
+        g_NtAlpcSendWaitReceivePortAddress, g_OriginalCodeLength); // g_OriginalNtAlpcSendWaitReceivePort will be called from the hook function after logging
 
     // Create jump: mov rax, HookedNtAlpcSendWaitReceivePort; jmp rax
     JmpCode[0] = 0x48;
@@ -545,19 +634,17 @@ NTSTATUS InstallHook(VOID) {
     *(PVOID*)(&JmpCode[2]) = HookedNtAlpcSendWaitReceivePort;
     JmpCode[10] = 0xFF;
     JmpCode[11] = 0xE0;
-    JmpCode[12] = 0x90; // Some NOPs to account for the 15-byte override
-    JmpCode[13] = 0x90;
-    JmpCode[14] = 0x90;
 
-    RtlCopyMemory(g_MappedAddress, JmpCode, 15);
+    RtlCopyMemory(g_MappedAddress, JmpCode, g_OriginalCodeLength);
 
-    // Create trampoline to continue NtAlpcSendWaitReceivePort
-    PUCHAR Trampoline = (PUCHAR)g_OriginalNtAlpcSendWaitReceivePort + 15;
-    Trampoline[0] = 0x48;
-    Trampoline[1] = 0xB8;
-    *(PVOID*)(&Trampoline[2]) = (PUCHAR)g_NtAlpcSendWaitReceivePortAddress + 15;
-    Trampoline[10] = 0xFF;
-    Trampoline[11] = 0xE0;
+    // Create trampoline to continue NtAlpcSendWaitReceivePort after override
+    PUCHAR TrampolineJump = (PUCHAR)g_OriginalNtAlpcSendWaitReceivePort + g_OriginalCodeLength;
+    // JMP QWORD PTR [RIP+0]
+    TrampolineJump[0] = 0xFF;
+    TrampolineJump[1] = 0x25;
+    *(PULONG)(&TrampolineJump[2]) = 0;
+    PVOID targetAddress = (PUCHAR)g_NtAlpcSendWaitReceivePortAddress + g_OriginalCodeLength;
+    *(PVOID*)(&TrampolineJump[6]) = targetAddress;
 
     g_HookInstalled = TRUE;
     DbgPrint("[ALPC] Hook installed successfully\n");
@@ -565,13 +652,12 @@ NTSTATUS InstallHook(VOID) {
     return STATUS_SUCCESS;
 }
 
-// Doesn't work
 VOID UninstallHook(VOID) {
     if (!g_HookInstalled || !g_MappedAddress) {
         return;
     }
 
-    RtlCopyMemory(g_MappedAddress, g_OriginalNtAlpcSendWaitReceivePort, 15);
+    RtlCopyMemory(g_MappedAddress, g_OriginalNtAlpcSendWaitReceivePort, g_OriginalCodeLength);
 
     if (g_Mdl) {
         MmUnmapLockedPages(g_MappedAddress, g_Mdl);
@@ -583,6 +669,11 @@ VOID UninstallHook(VOID) {
     }
 
     g_HookInstalled = FALSE;
+    g_MappedAddress = NULL;
+    g_OriginalNtAlpcSendWaitReceivePort = NULL;
+    g_Mdl = NULL;
+    g_OriginalCodeLength = 0;
+
     DbgPrint("[ALPC] Hook uninstalled\n");
 }
 

@@ -36,6 +36,7 @@
     <ConfigurationType>Driver</ConfigurationType>
     <DriverType>KMDF</DriverType>
     <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <Driver_SpectreMitigation>Spectre</Driver_SpectreMitigation>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <TargetVersion>Windows10</TargetVersion>
@@ -87,6 +88,18 @@
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
     </DriverSign>
+    <ClCompile />
+    <Link>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\karen\source\repos\zydis\src\;C:\Users\karen\source\repos\zydis\include;C:\Users\karen\source\repos\zydis\dependencies\zycore\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <PreprocessorDefinitions>ZYDIS_STATIC_DEFINE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <DisableSpecificWarnings>4201;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <DriverSign>
@@ -110,6 +123,24 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\zydis\src\Decoder.c" />
+    <ClCompile Include="..\zydis\src\DecoderData.c" />
+    <ClCompile Include="..\zydis\src\Disassembler.c" />
+    <ClCompile Include="..\zydis\src\Encoder.c" />
+    <ClCompile Include="..\zydis\src\EncoderData.c" />
+    <ClCompile Include="..\zydis\src\Formatter.c" />
+    <ClCompile Include="..\zydis\src\FormatterATT.c" />
+    <ClCompile Include="..\zydis\src\FormatterBase.c" />
+    <ClCompile Include="..\zydis\src\FormatterBuffer.c" />
+    <ClCompile Include="..\zydis\src\FormatterIntel.c" />
+    <ClCompile Include="..\zydis\src\MetaInfo.c" />
+    <ClCompile Include="..\zydis\src\Mnemonic.c" />
+    <ClCompile Include="..\zydis\src\Register.c" />
+    <ClCompile Include="..\zydis\src\Segment.c" />
+    <ClCompile Include="..\zydis\src\SharedData.c" />
+    <ClCompile Include="..\zydis\src\String.c" />
+    <ClCompile Include="..\zydis\src\Utils.c" />
+    <ClCompile Include="..\zydis\src\Zydis.c" />
     <ClCompile Include="AlpcMonitor.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

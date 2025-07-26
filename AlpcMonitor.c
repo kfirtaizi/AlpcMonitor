@@ -67,6 +67,9 @@ extern NTSYSAPI USHORT NTAPI RtlCaptureStackBackTrace(
     _Out_opt_    PULONG BackTraceHash);
 #pragma warning(pop)
 
+NTSYSAPI PCHAR NTAPI PsGetProcessImageFileName(
+    _In_ PEPROCESS Process
+);
 
 typedef struct _PORT_MESSAGE {
     union {
@@ -376,7 +379,7 @@ ULONG CaptureCallStack(PVOID* StackFrames, ULONG MaxFrames) {
 VOID LogAlpcMessage(PPORT_MESSAGE Message, BOOLEAN IsSend) {
     ALPC_MONITOR_MESSAGE MonitorMessage = { 0 };
     PEPROCESS Process = PsGetCurrentProcess();
-    PUCHAR ProcessName = (PUCHAR)Process + EPROCESS_IMAGEFILENAME_OFFSET;
+    PCHAR ProcessName = PsGetProcessImageFileName(Process);
 
     KeQuerySystemTime(&MonitorMessage.Timestamp);
     MonitorMessage.ProcessId = HandleToUlong(PsGetCurrentProcessId());
@@ -387,7 +390,6 @@ VOID LogAlpcMessage(PPORT_MESSAGE Message, BOOLEAN IsSend) {
     MonitorMessage.DataLength = Message->u1.s1.DataLength;
     MonitorMessage.TotalLength = Message->u1.s1.TotalLength;
 
-    // Copy process name
     RtlStringCbCopyA(MonitorMessage.ProcessName, sizeof(MonitorMessage.ProcessName), (char*)ProcessName);
 
     MonitorMessage.StackFrameCount = CaptureCallStack(

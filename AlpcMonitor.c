@@ -11,6 +11,7 @@
 #define IOCTL_ALPC_START_MONITORING CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_ALPC_STOP_MONITORING CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_ALPC_GET_MESSAGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_ALPC_SET_SSN CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define MAX_STACK_FRAMES 32
 
@@ -187,6 +188,7 @@ BOOLEAN g_HookInstalled = FALSE;
 PMDL g_Mdl = NULL;
 PVOID g_MappedAddress = NULL;
 SIZE_T g_OriginalCodeLength = 0;
+ULONG g_NtAlpcSsn = (ULONG)-1;
 
 typedef struct _SYSTEM_SERVICE_TABLE {
     PULONG ServiceTableBase;        // Pointer to KiServiceTable (array of offsets on x64)
@@ -305,7 +307,28 @@ NTSTATUS DispatchIoctl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     ULONG Information = 0;
 
     switch (IrpStack->Parameters.DeviceIoControl.IoControlCode) {
+    case IOCTL_ALPC_SET_SSN:
+        if (g_HookInstalled) {
+            DbgPrint("[ALPC] Cannot set SSN while hook is active.\n");
+            Status = STATUS_INVALID_DEVICE_STATE;
+            break;
+        }
+        if (IrpStack->Parameters.DeviceIoControl.InputBufferLength < sizeof(ULONG)) {
+            Status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        g_NtAlpcSsn = *(PULONG)Irp->AssociatedIrp.SystemBuffer;
+        DbgPrint("[ALPC] Received SSN for NtAlpcSendWaitReceivePort: %lu\n", g_NtAlpcSsn);
+        Status = STATUS_SUCCESS;
+        break;
+
     case IOCTL_ALPC_START_MONITORING:
+        if (g_NtAlpcSsn == (ULONG)-1) {
+            DbgPrint("[ALPC] Error: Monitoring started before SSN was set by the client.\n");
+            Status = STATUS_INVALID_DEVICE_STATE;
+            break;
+        }
+
         if (!g_HookInstalled) {
             Status = InstallHook();
             if (!NT_SUCCESS(Status)) {
@@ -538,14 +561,19 @@ NTSTATUS HookedNtAlpcSendWaitReceivePort(
 //      cleanly to the application that initiated the call.
 
 NTSTATUS InstallHook(VOID) {
-    // Find the SSN of NtAlpcSendWaitReceivePort during kernel debugging with: .foreach /ps 1 /pS 1 ( offset {dd /c 1 nt!KiServiceTable L poi(nt!KeServiceDescriptorTable+10)}){ r $t0 = ( offset >>> 4) + nt!KiServiceTable; .printf "%p - %y\n", $t0, $t0 }
-    g_NtAlpcSendWaitReceivePortAddress = GetSsdtRoutineAddress(142);
+    // Use the SSN received from the usermode app instead of a hardcoded value.
+    if (g_NtAlpcSsn == (ULONG)-1) {
+        DbgPrint("[ALPC] Hook installation failed: SSN not set.\n");
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    g_NtAlpcSendWaitReceivePortAddress = GetSsdtRoutineAddress(g_NtAlpcSsn);
+
     if (!g_NtAlpcSendWaitReceivePortAddress) {
-        DbgPrint("[ALPC] Failed to get function address for %s\n", "NtAlpcSendWaitReceivePort");
+        DbgPrint("[ALPC] Failed to get function address from SSDT for SSN %lu\n", g_NtAlpcSsn);
         return STATUS_UNSUCCESSFUL;
     }
 
-    DbgPrint("[ALPC] Installing hook at %p\n", g_NtAlpcSendWaitReceivePortAddress);
+    DbgPrint("[ALPC] Installing hook at %p for SSN %lu\n", g_NtAlpcSendWaitReceivePortAddress, g_NtAlpcSsn);
 
     // Initialize Zydis decoder and formatter
     ZydisDecoder decoder;

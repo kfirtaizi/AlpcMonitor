@@ -22,6 +22,7 @@
 // Message buffer structure for usermode
 typedef struct _ALPC_MONITOR_MESSAGE {
     LARGE_INTEGER Timestamp;
+    ULONG PortHandle;
     ULONG ProcessId;
     ULONG ThreadId;
     CHAR ProcessName[16];
@@ -399,12 +400,13 @@ ULONG CaptureCallStack(PVOID* StackFrames, ULONG MaxFrames) {
     return FramesCaptured;
 }
 
-VOID LogAlpcMessage(PPORT_MESSAGE Message, BOOLEAN IsSend) {
+VOID LogAlpcMessage(HANDLE PortHandle, PPORT_MESSAGE Message, BOOLEAN IsSend) {
     ALPC_MONITOR_MESSAGE MonitorMessage = { 0 };
     PEPROCESS Process = PsGetCurrentProcess();
     PCHAR ProcessName = PsGetProcessImageFileName(Process);
 
     KeQuerySystemTime(&MonitorMessage.Timestamp);
+    MonitorMessage.PortHandle = HandleToUlong(PortHandle);
     MonitorMessage.ProcessId = HandleToUlong(PsGetCurrentProcessId());
     MonitorMessage.ThreadId = HandleToUlong(PsGetCurrentThreadId());
     MonitorMessage.IsSend = IsSend;
@@ -499,7 +501,7 @@ NTSTATUS HookedNtAlpcSendWaitReceivePort(
 ) {
     if (SendMessage) {
         __try {
-            LogAlpcMessage(SendMessage, TRUE);
+            LogAlpcMessage(PortHandle, SendMessage, TRUE);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             DbgPrint("[ALPC] Exception in send logging\n");
@@ -514,7 +516,7 @@ NTSTATUS HookedNtAlpcSendWaitReceivePort(
     // Log receive message
     if (NT_SUCCESS(status) && ReceiveMessage && BufferLength && *BufferLength > 0) {
         __try {
-            LogAlpcMessage(ReceiveMessage, FALSE);
+            LogAlpcMessage(PortHandle, ReceiveMessage, FALSE);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             DbgPrint("[ALPC] Exception in receive logging\n");
@@ -561,7 +563,6 @@ NTSTATUS HookedNtAlpcSendWaitReceivePort(
 //      cleanly to the application that initiated the call.
 
 NTSTATUS InstallHook(VOID) {
-    // Use the SSN received from the usermode app instead of a hardcoded value.
     if (g_NtAlpcSsn == (ULONG)-1) {
         DbgPrint("[ALPC] Hook installation failed: SSN not set.\n");
         return STATUS_INVALID_DEVICE_STATE;

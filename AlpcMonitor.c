@@ -1,4 +1,4 @@
-#include <ntddk.h>
+#include <ntifs.h>
 #include <windef.h>
 #include <ntstrsafe.h>
 #include <Zydis/Zydis.h>
@@ -12,12 +12,16 @@
 #define IOCTL_ALPC_STOP_MONITORING CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_ALPC_GET_MESSAGE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_ALPC_SET_SSN CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_ALPC_FIND_RPC_CALLEE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define MAX_STACK_FRAMES 32
 
 #define MAX_JUMP_CODE_LENGTH 20
 #define JUMP_TO_HOOK_SHELL_LENGTH 12
 #define JUMP_TO_ORIGINAL_CODE_SHELL_LENGTH 14
+
+#define MAX_MODULE_NAME_LEN 256
+#define MAX_IMAGE_NAME_LEN 32
 
 // Message buffer structure for usermode
 typedef struct _ALPC_MONITOR_MESSAGE {
@@ -49,7 +53,46 @@ typedef struct _MESSAGE_BUFFER {
 PDEVICE_OBJECT g_DeviceObject = NULL;
 MESSAGE_BUFFER g_MessageBuffer = { 0 };
 
-#define EPROCESS_IMAGEFILENAME_OFFSET 0x5a8
+typedef struct _RPC_CALLEE_INFO_REQUEST {
+    ULONG ServerProcessId;
+    GUID InterfaceUuid;
+    UCHAR FunctionId;
+} RPC_CALLEE_INFO_REQUEST, * PRPC_CALLEE_INFO_REQUEST;
+
+typedef struct _RPC_CALLEE_INFO_RESPONSE {
+    WCHAR ImageName[MAX_IMAGE_NAME_LEN];
+    WCHAR ModuleName[MAX_MODULE_NAME_LEN];
+    ULONG64 Offset;
+    PVOID RawAddress;
+} RPC_CALLEE_INFO_RESPONSE, * PRPC_CALLEE_INFO_RESPONSE;
+
+typedef struct _PEB_LDR_DATA {
+    ULONG Length;
+    BOOLEAN Initialized;
+    HANDLE SsHandle;
+    LIST_ENTRY InLoadOrderModuleList;
+    LIST_ENTRY InMemoryOrderModuleList;
+    LIST_ENTRY InInitializationOrderModuleList;
+} PEB_LDR_DATA, * PPEB_LDR_DATA;
+
+typedef struct _LDR_DATA_TABLE_ENTRY {
+    LIST_ENTRY InLoadOrderLinks;
+    LIST_ENTRY InMemoryOrderLinks;
+    LIST_ENTRY InInitializationOrderLinks;
+    PVOID DllBase;
+    PVOID EntryPoint;
+    ULONG SizeOfImage;
+    UNICODE_STRING FullDllName;
+    UNICODE_STRING BaseDllName;
+} LDR_DATA_TABLE_ENTRY, * PLDR_DATA_TABLE_ENTRY;
+
+typedef struct _PEB {
+    BYTE Reserved1[2];
+    BYTE BeingDebugged;
+    BYTE Reserved2[1];
+    PVOID Reserved3[2];
+    PPEB_LDR_DATA Ldr;
+} PEB, * PPEB;
 
 NTSTATUS CreateDevice(PDRIVER_OBJECT DriverObject);
 VOID DeleteDevice(VOID);
@@ -58,6 +101,7 @@ NTSTATUS DispatchClose(PDEVICE_OBJECT DeviceObject, PIRP Irp);
 NTSTATUS DispatchIoctl(PDEVICE_OBJECT DeviceObject, PIRP Irp);
 VOID AddMessageToBuffer(PALPC_MONITOR_MESSAGE Message);
 BOOLEAN GetMessageFromBuffer(PALPC_MONITOR_MESSAGE Message);
+NTSTATUS FindRpcFunctionAddress(PRPC_CALLEE_INFO_REQUEST pIn, PRPC_CALLEE_INFO_RESPONSE pOutFunctionAddress);
 NTSTATUS InstallHook(VOID);
 VOID UninstallHook(VOID);
 #pragma warning(push)
@@ -72,6 +116,8 @@ extern NTSYSAPI USHORT NTAPI RtlCaptureStackBackTrace(
 NTSYSAPI PCHAR NTAPI PsGetProcessImageFileName(
     _In_ PEPROCESS Process
 );
+
+NTSYSAPI PPEB NTAPI PsGetProcessPeb(IN PEPROCESS Process);
 
 typedef struct _PORT_MESSAGE {
     union {
@@ -103,74 +149,6 @@ typedef struct _ALPC_MESSAGE_ATTRIBUTES {
     ULONG AllocatedAttributes;
     ULONG ValidAttributes;
 } ALPC_MESSAGE_ATTRIBUTES, * PALPC_MESSAGE_ATTRIBUTES;
-
-typedef struct _ALPC_COMMUNICATION_INFO {
-    PVOID ConnectionPort;
-    PVOID ServerCommunicationPort;
-    PVOID ClientCommunicationPort;
-    LIST_ENTRY CommunicationList;
-    PVOID CallbackObject;
-    PVOID CallbackContext;
-} ALPC_COMMUNICATION_INFO, * PALPC_COMMUNICATION_INFO;
-
-typedef struct _ALPC_PORT {
-    LIST_ENTRY PortListEntry;
-    PALPC_COMMUNICATION_INFO CommunicationInfo;
-    PVOID OwnerProcess;
-    PVOID CompletionPort;
-    PVOID CompletionKey;
-    PVOID CompletionPacketLookaside;
-    PVOID PortContext;
-    PVOID StaticSecurity;
-    PVOID IncomingQueuePort;
-    PVOID MainQueue;
-    PVOID LargeMessageQueue;
-    PVOID PendingQueue;
-    PVOID CanceledQueue;
-    PVOID WaitQueue;
-    PVOID Semaphore;
-    PVOID DummyEvent;
-    PVOID AlpcpPortLock;
-    ULONG Flags;
-    ULONG PortAttributes;
-    EX_PUSH_LOCK Lock;
-    BOOLEAN Initialized;
-    BOOLEAN Closed;
-    UCHAR Reserved[2];
-} ALPC_PORT, * PALPC_PORT;
-
-typedef struct _OBJECT_HEADER {
-    LONG_PTR PointerCount;
-    union {
-        LONG_PTR HandleCount;
-        PVOID NextToFree;
-    };
-    EX_PUSH_LOCK Lock;
-    UCHAR TypeIndex;
-    UCHAR TraceFlags;
-    UCHAR InfoMask;
-    UCHAR Flags;
-    ULONG Reserved;
-    PVOID QuotaBlockCharged;
-    PVOID SecurityDescriptor;
-    QUAD Body;
-} OBJECT_HEADER, * POBJECT_HEADER;
-
-typedef struct _OBJECT_HEADER_NAME_INFO {
-    PVOID Directory;
-    UNICODE_STRING Name;
-    LONG ReferenceCount;
-} OBJECT_HEADER_NAME_INFO, * POBJECT_HEADER_NAME_INFO;
-
-// RPC message detection
-typedef struct _RPC_MESSAGE_HEADER {
-    ULONG RpcType;
-    ULONG Unknown1;
-    ULONG Unknown2;
-    ULONG RequestId;
-    ULONG Unknown3;
-    ULONG MethodNumber;
-} RPC_MESSAGE_HEADER, * PRPC_MESSAGE_HEADER;
 
 typedef NTSTATUS(NTAPI* PNtAlpcSendWaitReceivePort)(
     IN HANDLE PortHandle,
@@ -368,6 +346,29 @@ NTSTATUS DispatchIoctl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         }
         break;
 
+    case IOCTL_ALPC_FIND_RPC_CALLEE:
+    {
+        if (IrpStack->Parameters.DeviceIoControl.InputBufferLength < sizeof(RPC_CALLEE_INFO_REQUEST)) {
+            Status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        if (IrpStack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(RPC_CALLEE_INFO_RESPONSE)) {
+            Status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        PRPC_CALLEE_INFO_REQUEST pIn = (PRPC_CALLEE_INFO_REQUEST)Irp->AssociatedIrp.SystemBuffer;
+        PRPC_CALLEE_INFO_RESPONSE pOut = (PRPC_CALLEE_INFO_RESPONSE)Irp->AssociatedIrp.SystemBuffer;
+
+        Status = FindRpcFunctionAddress(pIn, pOut);
+
+        if (NT_SUCCESS(Status)) {
+            Information = sizeof(RPC_CALLEE_INFO_RESPONSE);
+        }
+        break;
+    }
+
     default:
         Status = STATUS_INVALID_DEVICE_REQUEST;
         break;
@@ -422,7 +423,6 @@ VOID LogAlpcMessage(HANDLE PortHandle, PPORT_MESSAGE Message, BOOLEAN IsSend) {
         MAX_STACK_FRAMES
     );
 
-    // Copy message data
     if (Message->u1.s1.DataLength > 0) {
         ULONG CopySize = min(Message->u1.s1.DataLength, sizeof(MonitorMessage.Data));
         __try {
@@ -708,8 +708,124 @@ VOID UninstallHook(VOID) {
     DbgPrint("[ALPC] Hook uninstalled\n");
 }
 
+NTSTATUS FindRpcFunctionAddress(PRPC_CALLEE_INFO_REQUEST pIn, PRPC_CALLEE_INFO_RESPONSE pOutInfo)
+{
+    if (!pIn || !pOutInfo) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    DbgPrint("[ALPC] Starting RPC Callee search for PID: %lu\n", pIn->ServerProcessId);
+
+    NTSTATUS status = STATUS_NOT_FOUND;
+    PEPROCESS pServerProcess = NULL;
+    KAPC_STATE apcState;
+    BOOLEAN isAttached = FALSE;
+
+    status = PsLookupProcessByProcessId((HANDLE)pIn->ServerProcessId, &pServerProcess);
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("[ALPC] Failed to find process with ID %lu. Status: 0x%X\n", pIn->ServerProcessId, status);
+        return status;
+    }
+
+    __try {
+        KeStackAttachProcess(pServerProcess, &apcState);
+        isAttached = TRUE;
+
+        __try {
+            PPEB pPeb = PsGetProcessPeb(pServerProcess);
+            if (!pPeb || !pPeb->Ldr) {
+                DbgPrint("[ALPC] Could not get PEB or Ldr for process %lu\n", pIn->ServerProcessId);
+                status = STATUS_UNSUCCESSFUL;
+                __leave;
+            }
+
+            for (PLIST_ENTRY listEntry = pPeb->Ldr->InLoadOrderModuleList.Flink;
+                listEntry != &pPeb->Ldr->InLoadOrderModuleList;
+                listEntry = listEntry->Flink)
+            {
+                PLDR_DATA_TABLE_ENTRY pModuleEntry = CONTAINING_RECORD(listEntry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+                PVOID moduleBase = pModuleEntry->DllBase;
+                ULONG moduleSize = pModuleEntry->SizeOfImage;
+
+                if (!moduleBase || moduleSize < sizeof(GUID)) {
+                    continue;
+                }
+
+                for (PUCHAR pCurrent = (PUCHAR)moduleBase; pCurrent <= (PUCHAR)moduleBase + moduleSize - sizeof(GUID); pCurrent++)
+                {
+                    if (RtlCompareMemory(pCurrent, &pIn->InterfaceUuid, sizeof(GUID)) == sizeof(GUID))
+                    {
+                        __try
+                        {
+                            PVOID uuidAddress = pCurrent;
+                            PVOID pRpcServerInterface = (PVOID)((PUCHAR)uuidAddress - 4);
+
+                            PVOID pInterpreterInfoObj = *(PVOID*)((PUCHAR)pRpcServerInterface + 0x50);
+                            if (!pInterpreterInfoObj) __leave;
+
+                            PVOID* ppDispatchTable = (PVOID*)((PUCHAR)pInterpreterInfoObj + 0x8);
+                            if (!ppDispatchTable || !*ppDispatchTable) __leave;
+
+                            PVOID pDispatchTable = *ppDispatchTable;
+                            PVOID pTargetFunction = *(PVOID*)((PUCHAR)pDispatchTable + (pIn->FunctionId * sizeof(PVOID)));
+                            if (!pTargetFunction) __leave;
+
+                            DbgPrint("[ALPC] Confirmed valid RPC structure at %p in module %wZ\n", uuidAddress, &pModuleEntry->BaseDllName);
+
+                            PCHAR imageNameAnsi = PsGetProcessImageFileName(pServerProcess);
+                            if (imageNameAnsi) {
+                                UNICODE_STRING unicodeImageName = { 0 };
+                                ANSI_STRING ansiString;
+                                RtlInitAnsiString(&ansiString, imageNameAnsi);
+                                if (NT_SUCCESS(RtlAnsiStringToUnicodeString(&unicodeImageName, &ansiString, TRUE))) {
+                                    RtlStringCchCopyUnicodeString(pOutInfo->ImageName, MAX_IMAGE_NAME_LEN, &unicodeImageName);
+                                    RtlFreeUnicodeString(&unicodeImageName);
+                                }
+                            }
+
+                            RtlStringCchCopyUnicodeString(pOutInfo->ModuleName, MAX_MODULE_NAME_LEN, &pModuleEntry->BaseDllName);
+                            pOutInfo->Offset = (ULONG64)((PUCHAR)pTargetFunction - (PUCHAR)pModuleEntry->DllBase);
+                            pOutInfo->RawAddress = pTargetFunction;
+
+                            status = STATUS_SUCCESS;
+                            goto search_complete;
+                        }
+                        __except (EXCEPTION_EXECUTE_HANDLER)
+                        {
+                            DbgPrint("[ALPC] Exception validating potential UUID at %p. Continuing search.\n", pCurrent);
+                        }
+                    }
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            status = GetExceptionCode();
+            DbgPrint("[ALPC] A critical exception (0x%X) occurred during the search. Aborting.\n", status);
+        }
+
+    search_complete:
+        ;
+    }
+    __finally {
+        if (isAttached) {
+            KeUnstackDetachProcess(&apcState);
+        }
+        ObDereferenceObject(pServerProcess);
+    }
+
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("[ALPC] Search finished. RPC function not found. Final status: 0x%X\n", status);
+    }
+
+    return status;
+}
+
 VOID UnloadDriver(PDRIVER_OBJECT DriverObject) {
     UNREFERENCED_PARAMETER(DriverObject);
+
+    if (g_HookInstalled) {
+        UninstallHook();
+    }
 
     DeleteDevice();
 

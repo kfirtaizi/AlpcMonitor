@@ -1,10 +1,11 @@
 # AlpcMonitor
 
-A utility for monitoring Advanced Local Procedure Calls (ALPC) on Windows.
+A utility for monitoring Advanced Local Procedure Calls (ALPC) for IPC on Windows.  
 ![AlpcMonitor GUI Screenshot](docs/images/alpcmonitor-gui.png)
 
-* Can view usermode & kernelmode callstacks.
-* Given an RPC SEND message (i.e. calling a remote function), can _try_ to trace the remote function's RVA for easier debugging.
+* Can view raw RPC data ([Decrypted - No encryption is applied in the kernel even with `RPC_C_AUTHN_LEVEL_PKT_PRIVACY`](https://learn.microsoft.com/en-us/windows/win32/rpc/authentication-level-constants#RPC_C_AUTHN_LEVEL_PKT_PRIVACY))
+* Can view & filter on usermode & kernelmode callstacks of ALPC packets.
+* Given an RPC SEND message (i.e. calling a remote function), can _try_ to trace the remote function's RVA & VA for easier debugging.  
 ![Callstack and RPC Callee](docs/images/callstack-and-rpc-callee.png)
 
 ## Build Instructions
@@ -38,10 +39,12 @@ cmake --build . --config Release
 
 **Driver**
 ```bash
-`bcdedit /set testsigning on` -> Reboot
-`sc.exe create alpcmonitor binpath="C:\Users\asdsa\Desktop\ALPCMonitor.sys" type=kernel`
-`sc.exe start alpcmonitor`
+bcdedit /set testsigning on -> Reboot
+sc.exe create alpcmonitor binpath="<path-to-ALPCMonitor.sys>" type=kernel
+sc.exe start alpcmonitor
 ```
 
 **GUI**
-* Run as admin for full set of functionalities
+```bash
+Run as admin for full set of functionalities
+```

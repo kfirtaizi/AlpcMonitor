@@ -37,9 +37,11 @@ cmake --build . --config Release
 ## Install Instructions
 
 **Driver**
-* `bcdedit /set testsigning on` -> Reboot
-* `sc.exe create alpcmonitor binpath="C:\Users\asdsa\Desktop\ALPCMonitor.sys" type=kernel`
-* `sc.exe start alpcmonitor`
+```bash
+`bcdedit /set testsigning on` -> Reboot
+`sc.exe create alpcmonitor binpath="C:\Users\asdsa\Desktop\ALPCMonitor.sys" type=kernel`
+`sc.exe start alpcmonitor`
+```
 
 **GUI**
-* Run as admin for full functionalities
+* Run as admin for full set of functionalities

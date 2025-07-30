@@ -48,3 +48,7 @@ sc.exe start alpcmonitor
 
 **GUI**
 * Run as admin for full set of functionalities
+
+## Tested on
+* Windows 11 24H2 (Build 26100.4652)
+* Let me know if breaks on other versions!

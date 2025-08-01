@@ -52,6 +52,37 @@ sc.exe create alpcmonitor binpath="<path-to-ALPCMonitor.sys>" type=kernel
 sc.exe start alpcmonitor
 ```
 
+## Troubleshooting Error 577: "Windows cannot verify the digital signature for this file"
+This error can occur when running `sc start alpcmonitor` even after enabling Test Signing mode. It means that while Windows allows test-signed drivers, the specific signature on `ALPCMonitor.sys` is not from a trusted source on your local machine.
+
+To fix this, you must create your own test certificate, sign the driver with it, and then explicitly trust that certificate on the target machine.
+
+#### 1. On your Development PC (where you built the driver)
+Run these commands in PowerShell to create a certificate and sign the `.sys` file.
+
+```powershell
+# Create a certificate and export the necessary files
+$cert = New-SelfSignedCertificate -Subject "CN=AlpcMonitor Test Cert" -Type CodeSigningCert
+Export-Certificate -Cert $cert -FilePath "ALPCMonitor.cer"
+$pfx_pwd = ConvertTo-SecureString "password" -AsPlainText -Force
+Export-PfxCertificate -Cert $cert -FilePath "ALPCMonitor.pfx" -Password $pfx_pwd
+
+# Sign the driver binary (requires signtool.exe from the WDK)
+signtool sign /f "ALPCMonitor.pfx" /p "password" /fd SHA256 "path\to\your\build\driver\Debug\ALPCMonitor.sys"
+2. On the Target PC
+Copy the signed ALPCMonitor.sys and the ALPCMonitor.cer file to the machine.
+
+Install the certificate: Right-click on ALPCMonitor.cer and choose Install Certificate.
+
+Select Local Machine.
+
+Choose Place all certificates in the following store.
+
+Browse and select Trusted Root Certification Authorities.
+
+Proceed with the normal driver installation using sc.exe. The sc start alpcmonitor command should now succeed.
+
+
 **GUI**
 * Run as admin for full set of functionalities
 

@@ -5,6 +5,7 @@ A utility for monitoring Advanced Local Procedure Calls (ALPC) for IPC on Window
 ![AlpcMonitor GUI Screenshot](docs/images/alpcmonitor-gui.png)
 
 * Can view raw RPC data ([Decrypted - No encryption is applied in the kernel even with `RPC_C_AUTHN_LEVEL_PKT_PRIVACY`](https://learn.microsoft.com/en-us/windows/win32/rpc/authentication-level-constants#RPC_C_AUTHN_LEVEL_PKT_PRIVACY))
+* Can filter on all fields using complex logical expressions (&&, ||, ()), parsed via the [Shunting-yard algorithm](https://en.wikipedia.org/wiki/Shunting_yard_algorithm)
 * Can view & filter on usermode & kernelmode callstacks of ALPC packets.
 * Given an RPC SEND message (i.e. calling a remote function), can _try_ to trace the remote function's RVA & VA for easier debugging.  
 

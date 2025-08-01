@@ -19,13 +19,15 @@ git clone https://github.com/kfirtaizi/AlpcMonitor
 cd AlpcMonitor
 ```
 
-**2. Create build files with CMake:**
+**2. Update WDK & KMDF paths in [driver's CMakeLists](https://github.com/kfirtaizi/AlpcMonitor/blob/main/driver/CMakeLists.txt)**
+
+**3. Create build files with CMake:**
 ```bash
 mkdir build && cd build
 cmake -A x64 ..
 ```
 
-**3. Compile the code:**
+**4. Compile the code:**
 ```bash
 # Build for Debug
 cmake --build . --config Debug
@@ -42,7 +44,7 @@ cmake --build . --config Release
 
 **Driver**
 ```bash
-bcdedit /set testsigning on -> Reboot
+Disable Secure Boot -> bcdedit /set testsigning on -> Reboot
 sc.exe create alpcmonitor binpath="<path-to-ALPCMonitor.sys>" type=kernel
 sc.exe start alpcmonitor
 ```

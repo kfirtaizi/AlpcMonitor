@@ -20,6 +20,8 @@ cd AlpcMonitor
 ```
 
 **2. Update WDK & KMDF paths in [driver's CMakeLists](https://github.com/kfirtaizi/AlpcMonitor/blob/main/driver/CMakeLists.txt)**
+All below should be valid paths on the machine you're building on:
+`WDK_ROOT`, `WDK_VERSION`, `WDF_VERSION`, `WDK_INCLUDE_PATH`, `KMDF_INCLUDE_PATH`, `WDK_LIB_PATH`, `KMDF_LIB_PATH`
 
 **3. Create build files with CMake:**
 ```bash

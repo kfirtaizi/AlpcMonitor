@@ -2,7 +2,7 @@ project(ALPCMonitorDriver C)
 
 string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
 
-set(WDK_ROOT "C:/Program Files (x86)/Windows Kits/10")
+set(WDK_ROOT "D:/Windows Kits/10")
 set(WDK_VERSION "10.0.26100.0")
 set(WDF_VERSION "1.33")
 
@@ -50,12 +50,6 @@ target_link_libraries(ALPCMonitor PRIVATE
     "${KMDF_LIB_PATH}/WdfLdr.lib"
     "${KMDF_LIB_PATH}/WdfDriverEntry.lib"
     "${WDK_LIB_PATH}/ntoskrnl.lib"
-)
-
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/ALPCMonitor.inf"
-    "${CMAKE_CURRENT_BINARY_DIR}/ALPCMonitor.inf"
-    COPYONLY
 )
 
 message(STATUS "Configuring ALPCMonitor Driver")

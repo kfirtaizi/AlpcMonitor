@@ -443,8 +443,10 @@ void CreateControls(HWND hwnd) {
         350, 10, 40, 20, hwnd, NULL, NULL, NULL);
 
     g_hFilterEdit = CreateWindow(L"EDIT", L"",
-        WS_CHILD | WS_VISIBLE | WS_BORDER,
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
         395, 7, 200, 25, hwnd, (HMENU)ID_FILTER_EDIT, NULL, NULL);
+
+    SendMessage(g_hFilterEdit, EM_SETLIMITTEXT, (WPARAM)255, 0);
 
     g_hStackFilterCheck = CreateWindow(L"BUTTON", L"Enable callstack filtering (Slow!)",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,

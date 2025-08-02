@@ -59,6 +59,18 @@ namespace FilterEngine {
         std::wstring typeStr(typeHexString);
         if (typeStr.find(filterLower) != std::wstring::npos) return true;
 
+        // Check Message ID
+        std::wstring messageIdStr = std::to_wstring(msg.MessageId);
+        if (messageIdStr.find(filterLower) != std::wstring::npos) return true;
+
+        // Check Direction
+        std::wstring direction = msg.IsSend ? L"send" : L"recv";
+        if (direction.find(filterLower) != std::wstring::npos) return true;
+
+        // Check Data Length
+        std::wstring dataLengthStr = std::to_wstring(msg.DataLength);
+        if (dataLengthStr.find(filterLower) != std::wstring::npos) return true;
+
         // Search in message's data as bytes
         if (filterLower.length() >= 4 && filterLower.length() % 2 == 0) {
             if (std::all_of(filterLower.begin(), filterLower.end(), ::iswxdigit)) {

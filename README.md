@@ -68,7 +68,7 @@ sc.exe start alpcmonitor
 To fix, create your own test certificate, sign the driver with it, and then explicitly trust that certificate on the target machine.
 
 #### 1. On your Development PC (where you built the driver)
-Run these commands in PowerShell to create a certificate and sign the `.sys` file.
+Run these commands in PowerShell as admin in `ALPCMonitor.sys`'s directory to create a certificate and sign the `.sys` file.
 ```powershell
 # Create a certificate and export the necessary files
 $cert = New-SelfSignedCertificate -Subject "CN=AlpcMonitor Test Cert" -Type CodeSigningCert
@@ -77,10 +77,10 @@ $pfx_pwd = ConvertTo-SecureString "password" -AsPlainText -Force
 Export-PfxCertificate -Cert $cert -FilePath "ALPCMonitor.pfx" -Password $pfx_pwd
 
 # Sign the driver binary (requires signtool.exe from the WDK)
-signtool sign /f "ALPCMonitor.pfx" /p "password" /fd SHA256 "path\to\your\build\driver\Debug\ALPCMonitor.sys"
+signtool sign /f "ALPCMonitor.pfx" /p "password" /fd SHA256 "ALPCMonitor.sys"
 ```
 
 #### 2. On the Target PC (where you install the driver)
 1. Copy the signed `ALPCMonitor.sys` and the `ALPCMonitor.cer` file to the machine.
-2. `certutil -addstore "Root" "C:\Path\On\Target\Machine\MyCert.cer"`
+2. `certutil -addstore "Root" "C:\Path\On\Target\Machine\ALPCMonitor.cer"`
 3. Proceed with the normal driver installation using `sc.exe`. The `sc start alpcmonitor` command should now succeed.

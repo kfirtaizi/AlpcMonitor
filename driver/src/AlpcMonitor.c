@@ -366,7 +366,11 @@ VOID LogAlpcMessage(HANDLE PortHandle, PPORT_MESSAGE Message, BOOLEAN IsSend) {
     PEPROCESS Process = PsGetCurrentProcess();
     PCHAR ProcessName = PsGetProcessImageFileName(Process);
 
-    KeQuerySystemTime(&MonitorMessage.Timestamp);
+    LARGE_INTEGER UtcTime, LocalTime;
+
+    KeQuerySystemTime(&UtcTime);
+    ExSystemTimeToLocalTime(&UtcTime, &LocalTime);
+    MonitorMessage.Timestamp = LocalTime;
     MonitorMessage.PortHandle = HandleToUlong(PortHandle);
     MonitorMessage.ProcessId = HandleToUlong(PsGetCurrentProcessId());
     MonitorMessage.ThreadId = HandleToUlong(PsGetCurrentThreadId());
@@ -728,7 +732,10 @@ NTSTATUS FindRpcFunctionAddress(PRPC_CALLEE_INFO_REQUEST pIn, PRPC_CALLEE_INFO_R
 
                             PVOID pDispatchTable = *ppDispatchTable;
                             PVOID pTargetFunction = *(PVOID*)((PUCHAR)pDispatchTable + (pIn->FunctionId * sizeof(PVOID)));
-                            if (!pTargetFunction) __leave;
+                            if (!pTargetFunction || !(PUCHAR)pTargetFunction) __leave;
+
+							ULONG64 functionRVA = (ULONG64)((PUCHAR)pTargetFunction - (PUCHAR)moduleBase);
+							if (functionRVA < 0 || functionRVA >= moduleSize) __leave;
 
                             DbgPrint("[ALPC] Confirmed valid RPC structure at %p in module %wZ\n", uuidAddress, &pModuleEntry->BaseDllName);
 
@@ -744,7 +751,7 @@ NTSTATUS FindRpcFunctionAddress(PRPC_CALLEE_INFO_REQUEST pIn, PRPC_CALLEE_INFO_R
                             }
 
                             RtlStringCchCopyUnicodeString(pOutInfo->ModuleName, MAX_MODULE_NAME_LEN, &pModuleEntry->BaseDllName);
-                            pOutInfo->Offset = (ULONG64)((PUCHAR)pTargetFunction - (PUCHAR)pModuleEntry->DllBase);
+                            pOutInfo->Offset = functionRVA;
                             pOutInfo->RawAddress = pTargetFunction;
 
                             status = STATUS_SUCCESS;

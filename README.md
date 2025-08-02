@@ -82,5 +82,5 @@ signtool sign /f "ALPCMonitor.pfx" /p "password" /fd SHA256 "ALPCMonitor.sys"
 
 #### 2. On the Target PC (where you install the driver)
 1. Copy the signed `ALPCMonitor.sys` and the `ALPCMonitor.cer` file to the machine.
-2. `certutil -addstore "Root" "C:\Path\On\Target\Machine\MyCert.cer"`
+2. `certutil -addstore "Root" "C:\Path\On\Target\Machine\ALPCMonitor.cer"`
 3. Proceed with the normal driver installation using `sc.exe`. The `sc start alpcmonitor` command should now succeed.

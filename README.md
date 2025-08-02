@@ -68,7 +68,7 @@ sc.exe start alpcmonitor
 To fix, create your own test certificate, sign the driver with it, and then explicitly trust that certificate on the target machine.
 
 #### 1. On your Development PC (where you built the driver)
-Run these commands in PowerShell to create a certificate and sign the `.sys` file.
+Run these commands in PowerShell as admin in `ALPCMonitor.sys`'s directory to create a certificate and sign the `.sys` file.
 ```powershell
 # Create a certificate and export the necessary files
 $cert = New-SelfSignedCertificate -Subject "CN=AlpcMonitor Test Cert" -Type CodeSigningCert

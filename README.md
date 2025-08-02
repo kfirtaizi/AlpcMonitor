@@ -77,7 +77,7 @@ $pfx_pwd = ConvertTo-SecureString "password" -AsPlainText -Force
 Export-PfxCertificate -Cert $cert -FilePath "ALPCMonitor.pfx" -Password $pfx_pwd
 
 # Sign the driver binary (requires signtool.exe from the WDK)
-signtool sign /f "ALPCMonitor.pfx" /p "password" /fd SHA256 "path\to\your\build\driver\Debug\ALPCMonitor.sys"
+signtool sign /f "ALPCMonitor.pfx" /p "password" /fd SHA256 "ALPCMonitor.sys"
 ```
 
 #### 2. On the Target PC (where you install the driver)

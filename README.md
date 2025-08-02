@@ -19,13 +19,18 @@ git clone https://github.com/kfirtaizi/AlpcMonitor
 cd AlpcMonitor
 ```
 
-**2. Create build files with CMake:**
+**2. Update WDK & KMDF paths in [driver's CMakeLists](https://github.com/kfirtaizi/AlpcMonitor/blob/main/driver/CMakeLists.txt)**  
+  
+All below should be valid paths on the machine you're building on:  
+`WDK_ROOT`, `WDK_VERSION`, `WDF_VERSION`, `WDK_INCLUDE_PATH`, `KMDF_INCLUDE_PATH`, `WDK_LIB_PATH`, `KMDF_LIB_PATH`
+
+**3. Create build files with CMake:**
 ```bash
 mkdir build && cd build
 cmake -A x64 ..
 ```
 
-**3. Compile the code:**
+**4. Compile the code:**
 ```bash
 # Build for Debug
 cmake --build . --config Debug
@@ -42,10 +47,12 @@ cmake --build . --config Release
 
 **Driver**
 ```bash
-bcdedit /set testsigning on -> Reboot
+Disable Secure Boot -> bcdedit /set testsigning on -> Reboot
 sc.exe create alpcmonitor binpath="<path-to-ALPCMonitor.sys>" type=kernel
 sc.exe start alpcmonitor
 ```
+
+* **In case of errors running the driver refer to** [Troubleshooting](#troubleshooting)
 
 **GUI**
 * Run as admin for full set of functionalities
@@ -53,3 +60,27 @@ sc.exe start alpcmonitor
 ## Tested on
 * Windows 11 24H2 (Build 26100.4652)
 * Let me know if breaks on other versions!
+
+---
+## Troubleshooting
+
+### Error 577: "Windows cannot verify the digital signature for this file"
+To fix, create your own test certificate, sign the driver with it, and then explicitly trust that certificate on the target machine.
+
+#### 1. On your Development PC (where you built the driver)
+Run these commands in PowerShell to create a certificate and sign the `.sys` file.
+```powershell
+# Create a certificate and export the necessary files
+$cert = New-SelfSignedCertificate -Subject "CN=AlpcMonitor Test Cert" -Type CodeSigningCert
+Export-Certificate -Cert $cert -FilePath "ALPCMonitor.cer"
+$pfx_pwd = ConvertTo-SecureString "password" -AsPlainText -Force
+Export-PfxCertificate -Cert $cert -FilePath "ALPCMonitor.pfx" -Password $pfx_pwd
+
+# Sign the driver binary (requires signtool.exe from the WDK)
+signtool sign /f "ALPCMonitor.pfx" /p "password" /fd SHA256 "path\to\your\build\driver\Debug\ALPCMonitor.sys"
+```
+
+#### 2. On the Target PC (where you install the driver)
+1. Copy the signed `ALPCMonitor.sys` and the `ALPCMonitor.cer` file to the machine.
+2. `certutil -addstore "Root" "C:\Path\On\Target\Machine\MyCert.cer"`
+3. Proceed with the normal driver installation using `sc.exe`. The `sc start alpcmonitor` command should now succeed.

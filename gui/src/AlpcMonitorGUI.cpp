@@ -31,9 +31,6 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define BATCH_UPDATE_INTERVAL 25
 #define MAX_BATCH_SIZE 500
 
-// System information classes
-#define SystemModuleInformation 11
-
 struct CombinedStack {
     std::vector<PVOID> KernelFrames;
     std::vector<PVOID> UserFrames;

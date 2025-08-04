@@ -2,7 +2,7 @@
 #include <windef.h>
 #include <ntstrsafe.h>
 #include <Zydis/Zydis.h>
-#include "AlpcIoctl.h"
+#include "AlpcShared.h"
 
 #pragma warning(disable:4152)
 
@@ -73,6 +73,13 @@ extern NTSYSAPI USHORT NTAPI RtlCaptureStackBackTrace(
     _Out_opt_    PULONG BackTraceHash);
 #pragma warning(pop)
 
+NTSTATUS ZwQuerySystemInformation(
+    ULONG SystemInformationClass,
+    PVOID SystemInformation,
+    ULONG SystemInformationLength,
+    PULONG ReturnLength
+);
+
 NTSYSAPI PCHAR NTAPI PsGetProcessImageFileName(
     _In_ PEPROCESS Process
 );
@@ -135,6 +142,29 @@ typedef struct _SYSTEM_SERVICE_TABLE {
     ULONGLONG NumberOfServices;     // Number of services in the table
     PVOID ParamTableBase;           // Pointer to KiArgumentTable
 } SYSTEM_SERVICE_TABLE, * PSYSTEM_SERVICE_TABLE;
+
+#ifndef _RTL_PROCESS_MODULES
+#define _RTL_PROCESS_MODULES
+
+typedef struct _RTL_PROCESS_MODULE_INFORMATION {
+    HANDLE Section;                 
+    PVOID MappedBase;
+    PVOID ImageBase;
+    ULONG ImageSize;
+    ULONG Flags;
+    USHORT LoadOrderIndex;
+    USHORT InitOrderIndex;
+    USHORT LoadCount;
+    USHORT OffsetToFileName;
+    UCHAR  FullPathName[256];
+} RTL_PROCESS_MODULE_INFORMATION, * PRTL_PROCESS_MODULE_INFORMATION;
+
+typedef struct _RTL_PROCESS_MODULES {
+    ULONG NumberOfModules;
+    RTL_PROCESS_MODULE_INFORMATION Modules[1];
+} RTL_PROCESS_MODULES, * PRTL_PROCESS_MODULES;
+
+#endif
 
 VOID AddMessageToBuffer(PALPC_MONITOR_MESSAGE Message) {
     KIRQL OldIrql;
@@ -399,32 +429,120 @@ VOID LogAlpcMessage(HANDLE PortHandle, PPORT_MESSAGE Message, BOOLEAN IsSend) {
     AddMessageToBuffer(&MonitorMessage);
 }
 
-PULONGLONG GetSSDT()
+NTSTATUS GetKernelModuleInfo(IN PCSTR ModuleName, OUT PVOID* pImageBase, OUT PULONG pImageSize)
 {
-    ULONGLONG  KiSystemCall64 = __readmsr(0xC0000082);		// Get the address of nt!KeSystemCall64
-    ULONGLONG  KiSystemServiceRepeat = 0;
-    INT32 Limit = 4096;
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG modulesSize = 0;
+    PRTL_PROCESS_MODULES pModules = NULL;
 
-    for (int i = 0; i < Limit; i++) {						// Increase that address until you hit "0x4c/0x8d/0x15"
-        if (*(PUINT8)(KiSystemCall64 + i) == 0x4C
-            && *(PUINT8)(KiSystemCall64 + i + 1) == 0x8D
-            && *(PUINT8)(KiSystemCall64 + i + 2) == 0x15)
+    status = ZwQuerySystemInformation(SystemModuleInformation, NULL, 0, &modulesSize);
+    if (status != STATUS_INFO_LENGTH_MISMATCH) {
+        return status;
+    }
+
+    pModules = (PRTL_PROCESS_MODULES)ExAllocatePool2(POOL_FLAG_PAGED, modulesSize, 'kmod');
+    if (!pModules) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    __try {
+        status = ZwQuerySystemInformation(SystemModuleInformation, pModules, modulesSize, NULL);
+        if (!NT_SUCCESS(status)) {
+            __leave;
+        }
+
+        for (ULONG i = 0; i < pModules->NumberOfModules; ++i)
         {
-            KiSystemServiceRepeat = KiSystemCall64 + i;
-            DbgPrint("[ALPC] KiSystemCall64           %p \r\n", KiSystemCall64);
-            DbgPrint("[ALPC] KiSystemServiceRepeat    %p \r\n", KiSystemServiceRepeat);
+            PCSTR currentModuleName = (PCSTR)pModules->Modules[i].FullPathName + pModules->Modules[i].OffsetToFileName;
 
-            // Convert relative address to absolute address
-            return (PULONGLONG)(*(PINT32)(KiSystemServiceRepeat + 3) + KiSystemServiceRepeat + 7);
+            if (_stricmp(currentModuleName, ModuleName) == 0)
+            {
+                *pImageBase = pModules->Modules[i].ImageBase;
+                *pImageSize = pModules->Modules[i].ImageSize;
+                status = STATUS_SUCCESS;
+                __leave;
+            }
+        }
+
+        if (!(*pImageBase)) {
+            status = STATUS_NOT_FOUND;
+        }
+    }
+    __finally {
+        if (pModules) {
+            ExFreePoolWithTag(pModules, 'kmod');
         }
     }
 
-    return 0;
+    return status;
+}
+
+
+PULONGLONG GetSSDT()
+{
+    PVOID ntoskrnlBase = NULL;
+    ULONG ntoskrnlSize = 0;
+
+    if (!NT_SUCCESS(GetKernelModuleInfo("ntoskrnl.exe", &ntoskrnlBase, &ntoskrnlSize)))
+    {
+        DbgPrint("[ALPC] Failed to get ntoskrnl.exe module information.\n");
+        return NULL;
+    }
+
+    // The signature of the two LEA instructions we are looking for:
+    // lea r10, [rip+...]  ; 4c 8d 15 ...
+    // 4 bytes
+    // lea r11, [rip+...]  ; 4c 8d 1d ...
+    const UCHAR lea_r10_pattern[] = { 0x4c, 0x8d, 0x15 };
+    const UCHAR lea_r11_pattern[] = { 0x4c, 0x8d, 0x1d };
+    const ULONG signature_offset = 7;
+
+    ZydisDecoder decoder;
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+
+    for (PUCHAR p = (PUCHAR)ntoskrnlBase; p < (PUCHAR)ntoskrnlBase + ntoskrnlSize; ++p)
+    {
+        if (RtlCompareMemory(p, lea_r10_pattern, sizeof(lea_r10_pattern)) == sizeof(lea_r10_pattern))
+        {
+            if (p + signature_offset + sizeof(lea_r11_pattern) > (PUCHAR)ntoskrnlBase + ntoskrnlSize)
+            {
+                continue;
+            }
+
+            if (RtlCompareMemory(p + signature_offset, lea_r11_pattern, sizeof(lea_r11_pattern)) == sizeof(lea_r11_pattern))
+            {
+                ZydisDecodedInstruction instruction;
+                ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+                ZyanU64 candidateTableAddress = 0;
+
+                if (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, p, ntoskrnlSize - (p - (PUCHAR)ntoskrnlBase), &instruction, operands)))
+                {
+                    if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction, &operands[1], (ZyanU64)p, &candidateTableAddress)))
+                    {
+                        if (MmIsAddressValid((PVOID)candidateTableAddress))
+                        {
+                            PSYSTEM_SERVICE_TABLE pSdt = (PSYSTEM_SERVICE_TABLE)candidateTableAddress;
+
+                            if (MmIsAddressValid(pSdt->ServiceTableBase) &&
+                                pSdt->NumberOfServices < 1000 &&
+                                MmIsAddressValid(pSdt->ParamTableBase))
+                            {
+                                DbgPrint("[ALPC] Found valid KeServiceDescriptorTable at %p.\n", (PVOID)candidateTableAddress);
+                                return (PULONGLONG)candidateTableAddress;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    DbgPrint("[ALPC] Failed to find KeServiceDescriptorTable using robust scan.\n");
+    return NULL;
 }
 
 PVOID GetSsdtRoutineAddress(ULONG SystemServiceNumber)
 {
-    // Access the native SSDT from the service descriptor table
     PSYSTEM_SERVICE_TABLE pSSDT = (PSYSTEM_SERVICE_TABLE)GetSSDT();
 
     if (!pSSDT || !pSSDT->ServiceTableBase)
@@ -440,14 +558,11 @@ PVOID GetSsdtRoutineAddress(ULONG SystemServiceNumber)
         return NULL;
     }
 
-    // Get the offset from the service table
     PLONG ServiceTable = (PLONG)pSSDT->ServiceTableBase;
     LONG offset = ServiceTable[SystemServiceNumber];
 
-    // Extract the routine offset (upper bits, shift right by 4)
     LONG routineOffset = offset >> 4;
 
-    // Calculate the absolute address
     PVOID absoluteAddress = (PVOID)((ULONG_PTR)ServiceTable + routineOffset);
 
     return absoluteAddress;
@@ -579,7 +694,6 @@ NTSTATUS InstallHook(VOID) {
         ZydisFormatterFormatInstruction(
             &formatter, &instruction, operands, instruction.operand_count_visible, printBuffer,
             sizeof(printBuffer), instrAddress, NULL);
-        DbgPrint("+%-4X 0x%-16llX\t\t%hs\n", (ULONG)readOffset, instrAddress, printBuffer);
 
         readOffset += instruction.length;
     }

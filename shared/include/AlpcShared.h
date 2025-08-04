@@ -40,3 +40,5 @@ typedef struct _RPC_CALLEE_INFO_RESPONSE {
     ULONG64 Offset;
     PVOID RawAddress;
 } RPC_CALLEE_INFO_RESPONSE, * PRPC_CALLEE_INFO_RESPONSE;
+
+#define SystemModuleInformation 11

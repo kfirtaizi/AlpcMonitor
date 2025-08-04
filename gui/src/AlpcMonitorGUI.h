@@ -3,7 +3,7 @@
 #include <windows.h>
 #include <vector>
 #include "EtwUsermodeStackCapture.h"
-#include "AlpcIoctl.h"
+#include "AlpcShared.h"
 
 struct ResolvedStackInfo {
     std::vector<std::wstring> KernelStackStrings;
